@@ -2,6 +2,10 @@ name: "llm-exe"
 description: "Run an llm-exe executor in a GitHub Actions workflow."
 author: "llm-exe"
 
+branding:
+  icon: "cpu"
+  color: "gray-dark"
+
 inputs:
   provider:
     description: "llm-exe provider key passed to useLlm, such as openai.chat.v1 or openai.gpt-4o-mini."
