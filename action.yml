@@ -1,0 +1,51 @@
+name: "llm-exe"
+description: "Run an llm-exe executor in a GitHub Actions workflow."
+author: "llm-exe"
+
+inputs:
+  provider:
+    description: "llm-exe provider key passed to useLlm, such as openai.chat.v1 or openai.gpt-4o-mini."
+    required: true
+  model:
+    description: "Optional model option merged into useLlm options."
+    required: false
+  system:
+    description: "Optional system prompt passed as the first argument to createChatPrompt."
+    required: false
+  message:
+    description: "User message template added to the chat prompt."
+    required: true
+  data:
+    description: "JSON object passed to executor.execute as prompt data."
+    required: false
+    default: "{}"
+  parser:
+    description: "Parser name passed to createParser."
+    required: false
+    default: "string"
+  parser-options:
+    description: "JSON object passed as the second argument to createParser."
+    required: false
+    default: "{}"
+  llm-options:
+    description: "JSON object merged into useLlm options."
+    required: false
+    default: "{}"
+  executor-options:
+    description: "JSON object passed as the second argument to executor.execute."
+    required: false
+    default: "{}"
+  debug:
+    description: "When true, log executor completion metadata."
+    required: false
+    default: "false"
+
+outputs:
+  result:
+    description: "Executor result as a string. Objects and arrays are JSON-stringified."
+  json:
+    description: "Executor result JSON-stringified for use with fromJson."
+
+runs:
+  using: "node20"
+  main: "dist/index.js"
