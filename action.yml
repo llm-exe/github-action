@@ -1,5 +1,5 @@
 name: "llm-exe"
-description: "Run an llm-exe executor in a GitHub Actions workflow."
+description: "Run LLM prompts in GitHub Actions with structured outputs."
 author: "llm-exe"
 
 branding:
@@ -36,7 +36,7 @@ inputs:
     required: false
     default: "{}"
   executor-options:
-    description: "JSON object passed as the second argument to executor.execute."
+    description: "JSON object passed to executor.execute, including jsonSchema, functions, and functionCall."
     required: false
     default: "{}"
   debug:

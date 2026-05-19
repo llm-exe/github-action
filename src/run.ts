@@ -2,6 +2,7 @@ import type { ActionInput } from "./input";
 import { formatActionOutput, type ActionOutput } from "./output";
 import {
   createChatPrompt,
+  createLlmFunctionExecutor,
   createLlmExecutor,
   createParser,
   useLlm,
@@ -12,6 +13,7 @@ export interface LlmExeRuntime {
   createChatPrompt: typeof createChatPrompt;
   createParser: typeof createParser;
   createLlmExecutor: typeof createLlmExecutor;
+  createLlmFunctionExecutor: typeof createLlmFunctionExecutor;
 }
 
 export const defaultRuntime: LlmExeRuntime = {
@@ -19,6 +21,7 @@ export const defaultRuntime: LlmExeRuntime = {
   createChatPrompt,
   createParser,
   createLlmExecutor,
+  createLlmFunctionExecutor,
 };
 
 export async function runExecutorAction(
@@ -36,22 +39,26 @@ export async function runExecutorAction(
   prompt.addUserMessage(input.message);
 
   const parser = runtime.createParser(input.parser as any, input.parserOptions);
-  const executor = runtime.createLlmExecutor(
-    {
-      llm,
-      prompt,
-      parser,
-    } as any,
-    {
-      hooks: {
-        onComplete(metadata) {
-          if (input.debug) {
-            console.log(JSON.stringify(metadata, null, 2));
-          }
-        },
+  const executorConfiguration = {
+    llm,
+    prompt,
+    parser,
+  } as any;
+  const createExecutorOptions = {
+    hooks: {
+      onComplete(metadata: unknown) {
+        if (input.debug) {
+          console.log(JSON.stringify(metadata, null, 2));
+        }
       },
-    }
-  );
+    },
+  };
+  const executor = Array.isArray(input.executorOptions.functions)
+    ? runtime.createLlmFunctionExecutor(
+        executorConfiguration,
+        createExecutorOptions
+      )
+    : runtime.createLlmExecutor(executorConfiguration, createExecutorOptions);
 
   const result = await executor.execute(
     input.data as any,

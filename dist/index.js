@@ -34166,6 +34166,25 @@ function createParser(type, options = {}) {
       );
   }
 }
+var LlmFunctionParser = class extends BaseParser {
+  constructor(options) {
+    super("functionCall", options, "function_call");
+    __publicField(this, "parser");
+    this.parser = options.parser;
+  }
+  parse(text, _options) {
+    if (typeof text === "string") {
+      return this.parser.parse(text);
+    }
+    const { content } = text;
+    const functionUses = content?.filter((a3) => a3.type === "function_use") || [];
+    if (functionUses.length === 0) {
+      const [item] = content;
+      return this.parser.parse(item.text);
+    }
+    return content;
+  }
+};
 var LlmExecutor = class extends BaseExecutor {
   constructor(llmConfiguration, options) {
     super(
@@ -34239,8 +34258,29 @@ var LlmExecutor = class extends BaseExecutor {
     return this.llm.getTraceId();
   }
 };
+var LlmExecutorWithFunctions = class extends LlmExecutor {
+  constructor(llmConfiguration, options) {
+    super(
+      Object.assign({}, llmConfiguration, {
+        parser: new LlmFunctionParser({
+          parser: llmConfiguration.parser || new StringParser()
+        })
+      }),
+      options
+    );
+  }
+  async execute(_input, _options) {
+    return super.execute(_input, _options);
+  }
+};
 function createLlmExecutor(llmConfiguration, options) {
   return new LlmExecutor(llmConfiguration, options);
+}
+function createLlmFunctionExecutor(llmConfiguration, options) {
+  return new LlmExecutorWithFunctions(
+    llmConfiguration,
+    options
+  );
 }
 function deepClone(obj) {
   if (obj === null || obj === void 0) return obj;
@@ -36813,7 +36853,8 @@ var defaultRuntime = {
   useLlm,
   createChatPrompt,
   createParser,
-  createLlmExecutor
+  createLlmExecutor,
+  createLlmFunctionExecutor
 };
 async function runExecutorAction(input, runtime = defaultRuntime) {
   const llmOptions = {
@@ -36826,22 +36867,24 @@ async function runExecutorAction(input, runtime = defaultRuntime) {
   });
   prompt.addUserMessage(input.message);
   const parser = runtime.createParser(input.parser, input.parserOptions);
-  const executor = runtime.createLlmExecutor(
-    {
-      llm,
-      prompt,
-      parser
-    },
-    {
-      hooks: {
-        onComplete(metadata) {
-          if (input.debug) {
-            console.log(JSON.stringify(metadata, null, 2));
-          }
+  const executorConfiguration = {
+    llm,
+    prompt,
+    parser
+  };
+  const createExecutorOptions = {
+    hooks: {
+      onComplete(metadata) {
+        if (input.debug) {
+          console.log(JSON.stringify(metadata, null, 2));
         }
       }
     }
-  );
+  };
+  const executor = Array.isArray(input.executorOptions.functions) ? runtime.createLlmFunctionExecutor(
+    executorConfiguration,
+    createExecutorOptions
+  ) : runtime.createLlmExecutor(executorConfiguration, createExecutorOptions);
   const result = await executor.execute(
     input.data,
     input.executorOptions

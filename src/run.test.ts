@@ -14,6 +14,7 @@ describe("runExecutorAction", () => {
       createChatPrompt: jest.fn().mockReturnValue(prompt),
       createParser: jest.fn().mockReturnValue(parser),
       createLlmExecutor: jest.fn().mockReturnValue({ execute }),
+      createLlmFunctionExecutor: jest.fn(),
     } as any;
 
     const input: ActionInput = {
@@ -55,6 +56,71 @@ describe("runExecutorAction", () => {
     expect(output).toEqual({
       result: '{"ok":true}',
       json: '{"ok":true}',
+    });
+  });
+
+  it("uses the function executor when callable functions are provided", async () => {
+    const addUserMessage = jest.fn();
+    const execute = jest.fn().mockResolvedValue([
+      {
+        type: "function_use",
+        name: "create_release_note",
+        input: { title: "Fix login" },
+        functionId: "call_123",
+      },
+    ]);
+    const llm = { call: jest.fn() };
+    const prompt = { addUserMessage };
+    const parser = {};
+
+    const runtime: LlmExeRuntime = {
+      useLlm: jest.fn().mockReturnValue(llm),
+      createChatPrompt: jest.fn().mockReturnValue(prompt),
+      createParser: jest.fn().mockReturnValue(parser),
+      createLlmExecutor: jest.fn(),
+      createLlmFunctionExecutor: jest.fn().mockReturnValue({ execute }),
+    } as any;
+
+    const input: ActionInput = {
+      provider: "openai.chat.v1",
+      model: "gpt-4o-mini",
+      system: "System",
+      message: "Message {{input}}",
+      data: { input: "value" },
+      parser: "json",
+      parserOptions: {},
+      llmOptions: {},
+      executorOptions: {
+        functionCall: "auto",
+        functions: [
+          {
+            name: "create_release_note",
+            description: "Create a release note draft.",
+            parameters: {
+              type: "object",
+              properties: { title: { type: "string" } },
+              required: ["title"],
+            },
+          },
+        ],
+      },
+      debug: false,
+    };
+
+    const output = await runExecutorAction(input, runtime);
+
+    expect(runtime.createLlmExecutor).not.toHaveBeenCalled();
+    expect(runtime.createLlmFunctionExecutor).toHaveBeenCalledWith(
+      { llm, prompt, parser },
+      expect.objectContaining({
+        hooks: expect.objectContaining({ onComplete: expect.any(Function) }),
+      })
+    );
+    expect(execute).toHaveBeenCalledWith(input.data, input.executorOptions);
+    expect(output).toEqual({
+      result:
+        '[{"type":"function_use","name":"create_release_note","input":{"title":"Fix login"},"functionId":"call_123"}]',
+      json: '[{"type":"function_use","name":"create_release_note","input":{"title":"Fix login"},"functionId":"call_123"}]',
     });
   });
 });
