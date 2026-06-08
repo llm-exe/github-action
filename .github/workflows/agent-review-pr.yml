@@ -1,0 +1,194 @@
+name: Agent / Review PR
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    branches: [main, development]
+
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number to review"
+        required: true
+        type: string
+      base_ref:
+        description: "Base branch of the PR (e.g. development)"
+        required: true
+        type: string
+      head_ref:
+        description: "Head branch of the PR"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  id-token: write
+
+jobs:
+  tests:
+    if: github.base_ref == 'development' || (github.event_name == 'workflow_dispatch' && inputs.base_ref == 'development')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [20.x, 22.x]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout PR (workflow_dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        run: gh pr checkout ${{ inputs.pr_number }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify (format, typecheck, test)
+        run: npm run verify
+
+  review:
+    if: (github.base_ref == 'development' && github.event.action == 'opened') || (github.event_name == 'workflow_dispatch' && inputs.base_ref == 'development')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      verdict: ${{ steps.verdict.outputs.verdict }}
+
+    steps:
+      - name: Generate review bot token
+        id: review-bot-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.LLM_EXE_REVIEW_BOT_APP_ID }}
+          private-key: ${{ secrets.LLM_EXE_REVIEW_BOT_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ steps.review-bot-token.outputs.token }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Review PR
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref || inputs.head_ref }}
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ steps.review-bot-token.outputs.token }}
+          display_report: "false"
+          allowed_bots: "llm-exe-bot[bot]"
+          prompt: |
+            You are a senior engineer reviewing PR #${{ env.PR_NUMBER }} on the llm-exe GitHub Action repository.
+
+            This repo is a GitHub Action wrapper around the llm-exe SDK. It runs committed dist/index.js
+            (not src/) so every code change must be accompanied by a rebuilt dist/. The action exposes
+            inputs/outputs defined in action.yml and is consumed by other GitHub workflows via
+            `uses: llm-exe/github-action@v1`.
+
+            ## Your task
+
+            1. Read CLAUDE.md for project context.
+            2. Fetch the PR diff: `gh pr diff ${{ env.PR_NUMBER }}`
+            3. Read any changed source files in full.
+            4. Check that dist/ was rebuilt if src/ changed: look for dist/ changes alongside src/ changes.
+            5. Review for: correctness, security, type safety, action.yml contract changes, and dist freshness.
+
+            ## Verdict
+
+            After your review, post a PR comment with your findings. Then write your verdict to
+            /tmp/review-verdict.txt — one word only:
+            - `approve` — code is correct, dist is fresh (if src changed), no blocking issues
+            - `request-changes` — there are issues that must be fixed before merging
+            - `comment` — minor notes only, no blocking issues but not ready to formally approve
+
+            If the branch name starts with `agent/` note that this is bot-authored code — hold it
+            to the same standards but expect mechanical patterns.
+          claude_args: |
+            --allowedTools "Bash,Read,Glob,Grep,WebFetch"
+            --max-turns 30
+            --model ${{ vars.ANTHROPIC_OPUS_LATEST || 'claude-opus-4-6' }}
+
+      - name: Read verdict
+        id: verdict
+        if: always()
+        run: |
+          if [ -f /tmp/review-verdict.txt ]; then
+            v=$(cat /tmp/review-verdict.txt | tr -d '[:space:]')
+          else
+            v="no-verdict"
+          fi
+          echo "verdict=$v" >> "$GITHUB_OUTPUT"
+
+  decide:
+    needs: [tests, review]
+    if: always() && (github.base_ref == 'development' || (github.event_name == 'workflow_dispatch' && inputs.base_ref == 'development'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Generate review bot token
+        id: review-bot-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.LLM_EXE_REVIEW_BOT_APP_ID }}
+          private-key: ${{ secrets.LLM_EXE_REVIEW_BOT_PRIVATE_KEY }}
+
+      - name: Generate bot token
+        id: bot-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Approve or skip
+        env:
+          GH_TOKEN: ${{ steps.review-bot-token.outputs.token }}
+          BOT_TOKEN: ${{ steps.bot-token.outputs.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref || inputs.head_ref }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          verdict="${{ needs.review.outputs.verdict }}"
+          tests_result="${{ needs.tests.result }}"
+
+          echo "Review verdict : $verdict"
+          echo "Tests result   : $tests_result"
+
+          if [ "$verdict" = "approve" ] && [ "$tests_result" = "success" ]; then
+            gh pr review "$PR_NUMBER" \
+              --approve \
+              --body "Approved by reviewer agent (tests passing)." \
+              --repo "$REPOSITORY"
+
+            if echo "$HEAD_REF" | grep -q '^agent/'; then
+              IS_DRAFT=$(gh pr view "$PR_NUMBER" \
+                --json isDraft --jq '.isDraft' \
+                --repo "$REPOSITORY")
+              if [ "$IS_DRAFT" = "true" ]; then
+                GH_TOKEN="$BOT_TOKEN" gh pr ready "$PR_NUMBER" --repo "$REPOSITORY"
+                echo "PR marked as ready for review."
+              fi
+            fi
+
+            echo "PR #$PR_NUMBER approved."
+          else
+            echo "No approval submitted: verdict='$verdict', tests='$tests_result'."
+          fi
