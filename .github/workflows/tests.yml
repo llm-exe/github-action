@@ -26,7 +26,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Use Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node-version }}
           cache: "npm"
@@ -47,7 +47,7 @@ jobs:
       # bundle and fails if the committed output drifts from source, so a release can
       # never ship a stale bundle.
       - name: Use Node.js 20.x
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 20.x
           cache: "npm"
