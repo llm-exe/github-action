@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node-version: [20.x, 22.x]
+        node-version: [20.x, 22.x, 24.x]
     steps:
       - uses: actions/checkout@v4
 
@@ -46,10 +46,10 @@ jobs:
       # The Action runs the committed dist/index.js, not src/. This job rebuilds the
       # bundle and fails if the committed output drifts from source, so a release can
       # never ship a stale bundle.
-      - name: Use Node.js 20.x
+      - name: Use Node.js 24.x
         uses: actions/setup-node@v6
         with:
-          node-version: 20.x
+          node-version: 24.x
           cache: "npm"
 
       - name: Install dependencies
