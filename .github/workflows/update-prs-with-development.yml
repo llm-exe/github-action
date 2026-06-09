@@ -1,0 +1,52 @@
+name: CI / Update PRs
+
+on:
+  # push:
+  #   branches: [development]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-prs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Generate bot token
+        id: bot-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ steps.bot-token.outputs.token }}
+
+      - name: Update open PRs targeting development
+        env:
+          GH_TOKEN: ${{ steps.bot-token.outputs.token }}
+        run: |
+          PR_NUMBERS=$(gh pr list --base development --state open --json number --jq '.[].number')
+
+          if [ -z "$PR_NUMBERS" ]; then
+            echo "No open PRs targeting development."
+            exit 0
+          fi
+
+          for PR in $PR_NUMBERS; do
+            IS_DRAFT=$(gh pr view "$PR" --json isDraft --jq '.isDraft')
+            if [ "$IS_DRAFT" = "true" ]; then
+              echo "PR #$PR is a draft - skipping."
+              continue
+            fi
+            echo "Attempting to update PR #$PR..."
+            if gh pr update-branch "$PR" 2>&1; then
+              echo "PR #$PR updated successfully."
+            else
+              echo "PR #$PR skipped (conflicts or already up to date)."
+            fi
+          done

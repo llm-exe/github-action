@@ -1,0 +1,153 @@
+name: Release / Publish
+
+on:
+  workflow_dispatch:
+  release:
+    types:
+      - published
+
+permissions:
+  contents: write
+
+jobs:
+  check-release-branch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check if release is from main branch
+        if: github.event_name == 'release' && github.event.action == 'published'
+        run: |
+          BRANCH=$(jq -r .release.target_commitish "$GITHUB_EVENT_PATH")
+          if [ "$BRANCH" != "main" ]; then
+            echo "Releases should only be created from the main branch. This release is from $BRANCH."
+            exit 1
+          fi
+
+  publish-action:
+    name: Verify dist and promote floating tags
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'release'
+    needs: check-release-branch
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release tag and prerelease flag
+        id: meta
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            TAG="${{ github.event.release.tag_name }}"
+            PRE="${{ github.event.release.prerelease }}"
+          else
+            TAG=$(gh release view --json tagName --jq .tagName)
+            PRE=$(gh release view --json isPrerelease --jq .isPrerelease)
+          fi
+          if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
+            echo "Could not resolve a release tag."
+            exit 1
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "prerelease=$PRE" >> $GITHUB_OUTPUT
+          echo "Resolved tag=$TAG prerelease=$PRE"
+
+      - name: Checkout released tag
+        run: git checkout --detach "${{ steps.meta.outputs.tag }}"
+
+      - name: Use Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify dist matches source at released tag
+        run: |
+          npm run build
+          if ! git diff --quiet -- dist/; then
+            echo "::error::dist/ at ${{ steps.meta.outputs.tag }} does not match a clean build from src/."
+            git --no-pager diff --stat -- dist/
+            exit 1
+          fi
+          echo "dist/ verified for ${{ steps.meta.outputs.tag }}."
+
+      - name: Promote floating major/minor tags
+        if: steps.meta.outputs.prerelease != 'true'
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.meta.outputs.tag }}"
+          SHA=$(git rev-parse HEAD)
+          VER="${TAG#v}"
+
+          # Only stable MAJOR.MINOR.PATCH releases move the floating tags. Pre-releases
+          # (e.g. v2.0.0-beta.0) keep their immutable tag but must never hijack @v2.
+          if [[ ! "$VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Non-stable version $TAG: leaving floating tags unchanged."
+            exit 0
+          fi
+
+          MAJOR="${VER%%.*}"
+          REST="${VER#*.}"
+          MINOR="${REST%%.*}"
+
+          move_ref() {
+            local ref="$1"
+            if gh api "repos/$REPO/git/refs/tags/$ref" >/dev/null 2>&1; then
+              gh api -X PATCH "repos/$REPO/git/refs/tags/$ref" -f sha="$SHA" -F force=true >/dev/null
+              echo "Moved $ref -> $SHA"
+            else
+              gh api -X POST "repos/$REPO/git/refs" -f ref="refs/tags/$ref" -f sha="$SHA" >/dev/null
+              echo "Created $ref -> $SHA"
+            fi
+          }
+
+          move_ref "v$MAJOR"
+          move_ref "v$MAJOR.$MINOR"
+          echo "Consumers on @v$MAJOR and @v$MAJOR.$MINOR now resolve to $TAG."
+
+      - name: Prerelease note
+        if: steps.meta.outputs.prerelease == 'true'
+        run: echo "Prerelease ${{ steps.meta.outputs.tag }} published; floating tags left unchanged."
+
+  # Reverts the GitHub release back to draft if dist verification or tag promotion
+  # fails, so a broken release is never left published.
+  revert-to-draft:
+    if: always() && github.event_name == 'release' && needs.publish-action.result == 'failure'
+    needs: [publish-action]
+    name: Revert Release to Draft
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Revert release to draft
+        run: |
+          RELEASE_ID=$(jq -r .release.id "$GITHUB_EVENT_PATH")
+          ORIGINAL_BODY=$(jq -r .release.body "$GITHUB_EVENT_PATH")
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          {
+            echo "> [!WARNING]"
+            echo "> **Release Publishing Failed**"
+            echo "> This release was automatically reverted to draft because dist verification or tag promotion failed."
+            echo "> Review the [workflow logs](${RUN_URL}) and fix the issue before publishing again."
+            echo "---"
+            echo "$ORIGINAL_BODY"
+          } > release_body.txt
+
+          BODY_JSON=$(jq -Rs '.' < release_body.txt)
+          response=$(curl -s -X PATCH \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            https://api.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID \
+            -d "{\"draft\": true, \"body\": ${BODY_JSON}}")
+          if echo "$response" | jq -e '.id' > /dev/null; then
+            echo "Release reverted to draft with original notes preserved"
+          else
+            echo "Warning: Failed to revert release"
+            echo "$response" | jq '.'
+            exit 1
+          fi

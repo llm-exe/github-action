@@ -1,0 +1,68 @@
+name: CI / Tests
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: ["main", "development"]
+  push:
+    branches: ["main"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [20.x, 22.x]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify (format, typecheck, test)
+        run: npm run verify
+
+  dist:
+    name: Verify dist is in sync with source
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The Action runs the committed dist/index.js, not src/. This job rebuilds the
+      # bundle and fails if the committed output drifts from source, so a release can
+      # never ship a stale bundle.
+      - name: Use Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Rebuild bundle
+        run: npm run build
+
+      - name: Fail if committed dist/ is stale
+        run: |
+          if ! git diff --quiet -- dist/; then
+            echo "::error::dist/ is out of date with src/. Run 'npm run build' and commit the result."
+            git --no-pager diff --stat -- dist/
+            exit 1
+          fi
+          echo "dist/ matches a clean build from src/."
