@@ -23,7 +23,7 @@ jobs:
       matrix:
         node-version: [20.x, 22.x, 24.x]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Use Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@v6
@@ -41,7 +41,7 @@ jobs:
     name: Verify dist is in sync with source
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # The Action runs the committed dist/index.js, not src/. This job rebuilds the
       # bundle and fails if the committed output drifts from source, so a release can
