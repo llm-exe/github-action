@@ -1,6 +1,6 @@
 {
   "name": "@llm-exe/github-action",
-  "version": "0.0.0",
+  "version": "1.0.0",
   "private": true,
   "description": "GitHub Action for running llm-exe executors in workflows.",
   "main": "dist/index.js",
